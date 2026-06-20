@@ -5,9 +5,10 @@ module-level `root_agent`. The clients are constructed here at import (this file
 IS the edge for the dev UI); the same `control_center`/`slack` objects are reused
 by the entrypoints in main.py.
 
-The model runs through ADK's LiteLlm wrapper so we can use Claude. Override with
-EDCA_MODEL (e.g. a Gemini id for native ADK). ANTHROPIC_API_KEY (or Vertex
-creds) must be present at runtime.
+The model is Claude served from Vertex AI via ADK's native `Claude` class.
+Override the model id with EDCA_MODEL. Auth is GCP ADC
+(GOOGLE_APPLICATION_CREDENTIALS); GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION
+must be set at runtime (the `Claude` class reads them to build the Vertex client).
 """
 from __future__ import annotations
 
@@ -15,19 +16,19 @@ from typing import Any
 
 import requests
 from google.adk.agents import LlmAgent
-from google.adk.models.lite_llm import LiteLlm
+from google.adk.models.anthropic_llm import Claude
 from slack_sdk import WebClient
 
-from . import (
+from src.settings import (
     CONTROL_CENTER_URL,
     MODEL,
     REQUEST_TIMEOUT_S,
     SLACK_BOT_TOKEN,
     SLACK_CHANNEL,
 )
-from .auth import make_iap_jwt
-from .data_client import ControlCenterClient
-from .slack import SlackClient, build_alert_blocks
+from src.auth import make_iap_jwt
+from src.data_client import ControlCenterClient
+from src.slack import SlackClient, build_alert_blocks
 
 SYSTEM_INSTRUCTION = """\
 You are the data-platform recovery agent for Tecovas' EDW.
@@ -126,7 +127,7 @@ def alert_humans(
 
 root_agent = LlmAgent(
     name="edw_recovery_agent",
-    model=LiteLlm(model=MODEL),
+    model='gemini-2.5-flash', # todo
     instruction=SYSTEM_INSTRUCTION,
     tools=[list_watched_models, get_model_status, refresh_model, alert_humans],
 )

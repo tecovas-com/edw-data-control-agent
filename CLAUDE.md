@@ -59,27 +59,32 @@ not the source of truth. Never let the agent issue an unbounded re-run loop.
 
 ## Layout
 
-Flat modules — one file per layer (pure ↔ I/O ↔ edge), no nested packages.
+Three concerns, one-directional deps: `main.py -> {src, agents}` and
+`agents -> src`. `src/` is pure core (imports nothing internal); the agent lives
+in `agents/`; the entrypoint sits at the root, above both.
 
 ```
-src/
-├── __init__.py     # marks src as a package (needed for adk web + imports)
+main.py             # composition root / entrypoints: run_once heartbeat + FastAPI app (/run, /healthz)
+src/                # core utilities — flat modules, one file per layer (pure ↔ I/O ↔ edge)
+├── __init__.py     # marks src as a package
 ├── settings.py     # env-read config constants
 ├── recovery.py     # PURE decision logic: plan_recovery (runbook), may_retrigger (policy)
 ├── auth.py         # mint GCP IAM ID tokens (audience = control-center URL)
 ├── data_client.py  # requests wrapper over the freshness API/MCP
-├── slack.py        # Slack client + pure helpers (build_alert_blocks, verify_slack_signature)
-├── agent.py        # the LLM agent (escalation path): tools + `root_agent`
-└── main.py         # entrypoints: run_once heartbeat + FastAPI app (/run, /healthz)
+└── slack.py        # Slack client + pure helpers (build_alert_blocks, verify_slack_signature)
+agents/             # ADK agents dir (adk web scans this); folder name = app name
+└── edw_recovery_agent/
+    ├── __init__.py # exposes root_agent
+    └── agent.py    # the LLM agent (escalation path): tools + `root_agent` + client wiring
 config/agent.yaml   # which models to watch, thresholds, escalation targets
 tests/              # plain functions + stubs.py
 ```
 
 ## Running
 
-- **Dev UI:** `adk web` from the repo root — it loads `src.agent.root_agent`.
-- **HTTP (Cloud Run):** `uvicorn src.main:app` (Scheduler/Pub-Sub hits POST /run).
-- **One heartbeat locally:** `python -m src.main --once`.
+- **Dev UI:** `adk web agents` from the repo root — app shows as `edw_recovery_agent`.
+- **HTTP (Cloud Run):** `uvicorn main:app` (Scheduler/Pub-Sub hits POST /run).
+- **One heartbeat locally:** `python main.py --once`.
 - **Tests:** `pytest -k "not live"` (live Slack tests need SLACK_BOT_TOKEN/CHANNEL).
 
 ## Build order (TDD, green before next step)
@@ -87,6 +92,6 @@ tests/              # plain functions + stubs.py
 1. `auth.py` + `data_client.py` + `slack.py` — talk to the API and Slack
    (stub requests.Session / WebClient).
 2. `recovery.py` — guardrail checks + deterministic recovery decisions (pure).
-3. `main.py` — wire check → runbook against a stub client.
-4. `agent.py` — escalation path: tools + `root_agent`.
+3. `main.py` (repo root) — wire check → runbook against a stub client.
+4. `agents/edw_recovery_agent/agent.py` — escalation path: tools + `root_agent`.
 5. Deploy (Cloud Run + Scheduler/Pub-Sub).

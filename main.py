@@ -1,14 +1,19 @@
-"""Entrypoints — the only place that drives the service end to end.
+"""Entrypoints — the composition root that drives the service end to end.
+
+This is the one module that depends on BOTH sides of the codebase: the core
+utilities in ``src/`` and the LLM agent in ``agents/``. It lives at the repo
+root (outside both) so the dependency graph stays one-directional:
+``main -> {src, agents}`` and ``agents -> src``.
 
 Two ways in, one body:
 - HTTP (Cloud Run): Cloud Scheduler / Pub/Sub push hits POST /run.
-- CLI (local / Cloud Run Job):  python -m src.main --once
+- CLI (local / Cloud Run Job):  python main.py --once
 
 The flow per heartbeat: check freshness -> run the deterministic runbook ->
 escalate ambiguous cases to the LLM agent (which owns Slack alerting).
 
-    uvicorn src.main:app --port 8080      # serve the HTTP entrypoint
-    python -m src.main --once             # run one heartbeat locally
+    uvicorn main:app --port 8080      # serve the HTTP entrypoint
+    python main.py --once             # run one heartbeat locally
 """
 from __future__ import annotations
 
@@ -17,8 +22,8 @@ import sys
 
 from fastapi import FastAPI
 
-from .agent import control_center, root_agent
-from .recovery import plan_recovery
+from agents.edw_recovery_agent.agent import control_center, root_agent
+from src.recovery import plan_recovery
 
 
 async def _escalate(unique_id: str) -> str:

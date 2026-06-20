@@ -12,6 +12,8 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 COPY src ./src
+COPY agents ./agents
+COPY main.py ./
 
 # Cloud Run sends traffic to $PORT; serve the HTTP entrypoint.
-CMD ["sh", "-c", "uvicorn src.main:app --host 0.0.0.0 --port ${PORT}"]
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT}"]
