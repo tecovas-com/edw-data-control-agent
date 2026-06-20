@@ -2,23 +2,22 @@
 
 Alerting + recovery agent for the data platform. It is a **consumer** of
 [`edw-data-control-center`](../edw-data-control-center): it polls that service's
-freshness API, runs a deterministic recovery runbook for known failures, and
-escalates ambiguous cases to an LLM agent that diagnoses, acts within policy,
-and alerts a human.
+freshness API and hands each stale model to an LLM agent that diagnoses, acts
+within policy (re-running loaders when warranted), and alerts a human.
 
 This repo never imports the control center's core — it talks to it over the
 network with a GCP IAM ID token. See `CLAUDE.md` for architecture and conventions.
 
-## Quick start
+## Local Development Setup
+
+### Install dependencies
 
 ```bash
 pip install -r requirements-dev.txt
 pytest -q
-
 ```
 
-## Local Development Setup
-
+### Enviroonmennt vvariables
 Copy the env template and fill in your secrets (Slack tokens, control-center URL):
 
 ```bash
@@ -32,7 +31,6 @@ cp .env.template .env
 
 ### Test local Setup
 - Run `python tests/test_dev_env.py` to check if dev setup is correct  
-
 
 ## IAM Permissions
 

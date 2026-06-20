@@ -1,8 +1,8 @@
 """ADK agent package — app name = ``edw_recovery_agent``.
 
 `adk web agents` / `adk run agents/edw_recovery_agent` discover this package and
-read `agent.root_agent`. Core utilities (auth, data client, slack, recovery,
-settings) live in ``src/``; only the agent definition lives here.
+read `agent.root_agent`. Core utilities (auth, data client, slack, settings)
+live in ``src/``; only the agent definition lives here.
 
 ADK's CLI loader puts the ``agents/`` dir on ``sys.path`` (not the repo root),
 so ``import src`` would fail. We prepend the repo root here so the package loads

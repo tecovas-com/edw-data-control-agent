@@ -1,4 +1,4 @@
-"""The recovery agent (the escalation path) — exposes `root_agent` for ADK.
+"""The recovery agent — exposes `root_agent` for ADK.
 
 `adk web` discovers an agent by importing this module and reading the
 module-level `root_agent`. The clients are constructed here at import (this file
@@ -12,16 +12,14 @@ must be set at runtime (the `Claude` class reads them to build the Vertex client
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 import requests
 from google.adk.agents import LlmAgent
-from google.adk.models.anthropic_llm import Claude
 from slack_sdk import WebClient
 
 from src.settings import (
     CONTROL_CENTER_URL,
-    MODEL,
     REQUEST_TIMEOUT_S,
     SLACK_BOT_TOKEN,
     SLACK_CHANNEL,
@@ -33,9 +31,10 @@ from src.slack import SlackClient, build_alert_blocks
 SYSTEM_INSTRUCTION = """\
 You are the data-platform recovery agent for Tecovas' EDW.
 
-You are invoked only when the deterministic runbook could NOT confidently resolve
-a stale pipeline. Your job: diagnose why a watched dbt model or its sources are
-stale, decide on the safest corrective action, and report clearly.
+You are invoked when a watched dbt model is stale. You own the entire decision:
+diagnose why the model or its sources are stale, decide on the safest corrective
+action, take it, and report clearly. There is no deterministic runbook ahead of
+you — start by inspecting the model's status before doing anything.
 
 Available tools let you inspect freshness and re-trigger loaders. Rules:
 - Re-running a loader costs money and compute. Prefer the smallest action.
@@ -48,8 +47,17 @@ Available tools let you inspect freshness and re-trigger loaders. Rules:
 - Always end by summarizing: what was stale, what you did (or chose not to do),
   and whether a human needs to act.
 - When a human needs to act (the problem is upstream, a re-run was refused, or a
-  re-run did not resolve the staleness), call `alert_humans` to post a Slack
-  alert with a clear diagnosis. Do not alert for routine, self-resolved cases.
+  re-run did not resolve the staleness), call `alert_humans` to post a rich
+  stale-pipeline alert with a clear diagnosis. Do not alert for routine,
+  self-resolved cases.
+
+You can also communicate directly when asked:
+- `message_channel` posts a plain message to any Slack channel (by name like
+  "data_devs" or by ID). Use it for general or ad-hoc messages and tests.
+- `dm_human` sends a direct message to one person (resolve the name first with
+  `find_slack_user`).
+Use `alert_humans` specifically for structured stale-pipeline alerts; use
+`message_channel`/`dm_human` for everything else.
 
 Be concise and factual. You are talking to data engineers.
 """
@@ -71,11 +79,58 @@ slack = SlackClient(
 
 
 # --- tools (plain functions; ADK reads name/signature/docstring) ------------
+#
+# Every tool returns an ADK-style envelope so the model can reason about
+# outcomes: {"status": "success", ...payload} or {"status": "error",
+# "error_message": "..."}. `_guard` wraps control-center calls (which raise on
+# HTTP errors); `_from_slack` translates the Slack client's {"ok": ...} shape.
 
 
-def list_watched_models() -> list[dict[str, Any]]:
+def _guard(payload_key: str, fn: Callable[[], Any]) -> dict[str, Any]:
+    """Run a control-center call, returning a success/error envelope."""
+    try:
+        return {"status": "success", payload_key: fn()}
+    except Exception as e:  # network / HTTP / decode — surface to the model
+        return {"status": "error", "error_message": str(e)}
+
+
+def _from_slack(result: dict[str, Any]) -> dict[str, Any]:
+    """Translate a Slack client result ({"ok": bool, ...}) to the envelope."""
+    if result.get("ok"):
+        return {"status": "success", **result}
+    return {
+        "status": "error",
+        "error_message": result.get("error", "Slack call failed"),
+        **result,
+    }
+
+
+def list_watched_models() -> dict[str, Any]:
     """List all watched dbt models and whether each is currently fresh."""
-    return control_center.list_models()
+    return _guard("models", control_center.list_models)
+
+
+def get_models_status(filter: str = "all") -> dict[str, Any]:
+    """Batch freshness for every watched model in ONE call -> {checked_at, models}.
+
+    Prefer this over calling get_model_status per model — it avoids the N+1 and
+    is the efficient way to survey the whole fleet. It is expensive server-side
+    (fans out BigQuery + loader calls), so call it once and reason over the result.
+
+    Args:
+        filter: which models to return — "all", "stale" (only stale ones), or
+            "behind_sources" (fresh model but stale upstream sources).
+    """
+    return _guard("result", lambda: control_center.models_status(filter))
+
+
+def get_stale_models() -> dict[str, Any]:
+    """List only the currently stale watched models -> {checked_at, models}.
+
+    Shorthand for get_models_status(filter="stale"). Use this as the first step
+    when diagnosing what needs recovery.
+    """
+    return _guard("result", lambda: control_center.models_status("stale"))
 
 
 def get_model_status(unique_id: str) -> dict[str, Any]:
@@ -84,7 +139,7 @@ def get_model_status(unique_id: str) -> dict[str, Any]:
     Args:
         unique_id: the dbt unique_id, e.g. "model.tecovas.fct_sales".
     """
-    return control_center.get_model_status(unique_id)
+    return _guard("model", lambda: control_center.get_model_status(unique_id))
 
 
 def refresh_model(unique_id: str) -> dict[str, Any]:
@@ -95,7 +150,7 @@ def refresh_model(unique_id: str) -> dict[str, Any]:
     Args:
         unique_id: the dbt unique_id, e.g. "model.tecovas.fct_sales".
     """
-    return control_center.refresh_model(unique_id)
+    return _guard("result", lambda: control_center.refresh_model(unique_id))
 
 
 def alert_humans(
@@ -122,12 +177,71 @@ def alert_humans(
         failing_sources=failing_sources,
         actions_taken=actions_taken,
     )
-    return slack.post_alert(text=f"Stale pipeline: {unique_id}", blocks=blocks)
+    return _from_slack(slack.post_alert(text=f"Stale pipeline: {unique_id}", blocks=blocks))
+
+
+def message_channel(channel: str, message: str) -> dict[str, Any]:
+    """Post a plain-text message to a Slack channel.
+
+    Use for general or ad-hoc messages (not structured stale-pipeline alerts —
+    use `alert_humans` for those).
+
+    Args:
+        channel: channel name (e.g. "data_devs" or "#data_devs") or ID
+            (e.g. "C0123ABCD").
+        message: plain-text message to post.
+    """
+    target = channel
+    if not channel.startswith(("C", "G", "D")) or " " in channel:
+        found = slack.find_channel_by_name(channel)
+        if not found.get("ok"):
+            return _from_slack(found)
+        target = found["id"]
+    return _from_slack(slack.post_alert(text=message, channel=target))
+
+
+def find_slack_user(name: str) -> dict[str, Any]:
+    """Find Slack users by display/real name (case-insensitive substring match).
+
+    Use this to resolve a person's name to a Slack user ID before DMing them
+    with `dm_human`. On success returns ``{"status": "success", "users":
+    [{"id", "name", "real_name", "display_name", "email"}, ...]}``. If more than
+    one user matches, disambiguate before messaging.
+
+    Args:
+        name: full or partial name to search for, e.g. "Lorenzo Peve".
+    """
+    return _from_slack(slack.find_users_by_name(name))
+
+
+def dm_human(user: str, message: str) -> dict[str, Any]:
+    """Send a direct message to a specific Slack user (not the team channel).
+
+    Use this to reach a named owner privately — e.g. the engineer on-call for a
+    loader — when an alert is targeted rather than for the whole team. For
+    broad, team-wide alerts use `alert_humans` instead. To message someone by
+    name, first resolve them with `find_slack_user`.
+
+    Args:
+        user: the recipient's Slack user ID (e.g. "U123456") or email address.
+        message: plain-text message to send.
+    """
+    return _from_slack(slack.send_dm(user=user, text=message))
 
 
 root_agent = LlmAgent(
     name="edw_recovery_agent",
     model='gemini-2.5-flash', # todo
     instruction=SYSTEM_INSTRUCTION,
-    tools=[list_watched_models, get_model_status, refresh_model, alert_humans],
+    tools=[
+        list_watched_models,
+        get_models_status,
+        get_stale_models,
+        get_model_status,
+        refresh_model,
+        alert_humans,
+        message_channel,
+        find_slack_user,
+        dm_human,
+    ],
 )

@@ -9,8 +9,9 @@ Two ways in, one body:
 - HTTP (Cloud Run): Cloud Scheduler / Pub/Sub push hits POST /run.
 - CLI (local / Cloud Run Job):  python main.py --once
 
-The flow per heartbeat: check freshness -> run the deterministic runbook ->
-escalate ambiguous cases to the LLM agent (which owns Slack alerting).
+The flow per heartbeat: hand the agent one procedural prompt and let it drive.
+The agent finds the stale models itself (via its tools), then for each one
+diagnoses, decides within server-side policy, acts, and alerts humans.
 
     uvicorn main:app --port 8080      # serve the HTTP entrypoint
     python main.py --once             # run one heartbeat locally
@@ -18,16 +19,48 @@ escalate ambiguous cases to the LLM agent (which owns Slack alerting).
 from __future__ import annotations
 
 import asyncio
-import sys
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI
 
-from agents.edw_recovery_agent.agent import control_center, root_agent
-from src.recovery import plan_recovery
+from agents.edw_recovery_agent.agent import root_agent
+
+# The per-heartbeat task. All decision policy lives in the agent's system
+# instruction; this is just the ordered procedure for one run.
+HEARTBEAT_PROMPT = """\
+Run the freshness recovery procedure now. This run started at {run_time}.
+
+1. Call get_stale_models to find every currently stale watched model.
+2. If none are stale, send slack message to lorenzo.peve@tecovas.com (Lorenzo Peve)
+3. For EACH stale model, in turn:
+   a. Call get_model_status to see why it (or its sources) is stale.
+   b. Decide the safest corrective action. Re-trigger a loader only when that
+      is likely to help and is within policy; never re-run a loader that already
+      succeeded — that points upstream.
+   c. Take the action (refresh_model) if warranted, then re-check status.
+   d. If a human needs to act (upstream problem, re-run refused, or staleness
+      persists), call alert_humans with a clear diagnosis.
+4. End with a concise summary: which models were stale, what you did for each,
+   and which still need a human.
+
+Use emoji generously in every Slack message so the status is readable at a
+glance:
+- Start the message with a single overall status emoji: ✅ all healthy,
+  ⚠️ recovered / needs attention soon, 🚨 a human must act now.
+- Prefix per-item lines too, e.g. ✅ healthy/recovered, 🔄 re-ran a loader,
+  ⏳ waiting, 🚨 still stale / needs a human, 🔍 investigated.
+For the "no models are stale" case, lead with ✅, e.g.
+"✅ All clear — no dbt models are currently stale. The freshness recovery
+procedure found no issues. 🎉".
+
+Always include the run time ({run_time}) in the Slack message, e.g. a trailing
+line like "🕒 Run time: {run_time}".
+"""
 
 
-async def _escalate(unique_id: str) -> str:
-    """Run the LLM agent for one stale model and return its summary text."""
+async def _run_agent(prompt: str) -> str:
+    """Drive the LLM agent for one run and return its final summary text."""
     from google.adk.runners import Runner
     from google.adk.sessions import InMemorySessionService
     from google.genai import types
@@ -38,14 +71,13 @@ async def _escalate(unique_id: str) -> str:
         session_service=InMemorySessionService(),
     )
     await runner.session_service.create_session(
-        app_name="edw_recovery_agent", user_id="cron", session_id=unique_id
+        app_name="edw_recovery_agent", user_id="cron", session_id="heartbeat"
     )
-    prompt = f"Model {unique_id} is stale and the runbook could not resolve it. Investigate and act."
     message = types.Content(role="user", parts=[types.Part(text=prompt)])
 
     final = ""
     async for event in runner.run_async(
-        user_id="cron", session_id=unique_id, new_message=message
+        user_id="cron", session_id="heartbeat", new_message=message
     ):
         if event.is_final_response() and event.content and event.content.parts:
             final = event.content.parts[0].text or ""
@@ -53,25 +85,12 @@ async def _escalate(unique_id: str) -> str:
 
 
 async def run_once() -> None:
-    """One heartbeat: check -> deterministic runbook -> escalate."""
-    for model in control_center.list_models():
-        if model.get("overall_is_fresh", True):
-            continue
-        unique_id = model["model_unique_id"]
-        status = control_center.get_model_status(unique_id)
-        result = plan_recovery(status)
-
-        for action in result.actions:
-            if action.kind == "retrigger_loader":
-                # TODO: consult core.may_retrigger with recent attempts first.
-                control_center.trigger_loader(action.loader_type, action.loader_id)
-                print(f"[runbook] re-triggered {action.loader_type}:{action.loader_id}")
-
-        if result.escalate:
-            # The agent owns alerting: it calls `alert_humans` (Slack) when a
-            # human needs to act. We just log the final summary here.
-            summary = await _escalate(unique_id)
-            print(f"[agent] {unique_id}: {summary}")
+    """One heartbeat: run the agent against the procedural prompt and log it."""
+    run_time = datetime.now(ZoneInfo("America/Chicago")).strftime(
+        "%Y-%m-%d %H:%M:%S %Z"
+    )
+    summary = await _run_agent(HEARTBEAT_PROMPT.format(run_time=run_time))
+    print(f"[agent] {summary}")
 
 
 app = FastAPI(title="edw-data-control-agent")
