@@ -14,8 +14,7 @@ import os
 
 import pytest
 
-from src.core import build_alert_blocks, verify_slack_signature
-from src.clients import SlackClient
+from src.slack import SlackClient, build_alert_blocks, verify_slack_signature
 from stubs import FakeWebClient
 
 SECRET = "unit-signing-secret-for-hmac-test"

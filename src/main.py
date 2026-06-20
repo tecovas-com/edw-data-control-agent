@@ -18,7 +18,7 @@ import sys
 from fastapi import FastAPI
 
 from .agent import control_center, root_agent
-from .core import plan_recovery
+from .recovery import plan_recovery
 
 
 async def _escalate(unique_id: str) -> str:

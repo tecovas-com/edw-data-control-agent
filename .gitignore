@@ -1,4 +1,6 @@
-/gcp
+gcp
+scrap/
+
 
 __pycache__/
 *.py[cod]
@@ -9,3 +11,4 @@ venv/
 .ruff_cache/
 .env
 config/agent.local.yaml
+tests/output/

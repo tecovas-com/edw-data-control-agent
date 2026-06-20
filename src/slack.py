@@ -1,88 +1,113 @@
-"""I/O adapters — the only place this service talks to the outside world.
+"""Everything Slack.
 
-Three concrete clients, all small and testable (stub them in tests/stubs.py):
+Two pure helpers (no I/O — testable with no secrets, no clock, no network):
+- `verify_slack_signature`: HMAC check for inbound interactivity webhooks.
+- `build_alert_blocks`: Block Kit composition for a stale-pipeline alert.
 
-- `fetch_id_token`       — mint a GCP IAM ID token for service-to-service auth.
-- `ControlCenterClient`  — httpx wrapper over the freshness API/MCP. Never
-                           imports `edc.core`; the network is the contract.
-- `SlackClient`          — wrapper over the Slack Web API for alerts.
-
-Pure logic (recovery decisions, Block Kit composition, signature checks) lives
-in core.py and is injected/consumed here, never the other way around.
+Plus `SlackClient`, the I/O wrapper over the Slack Web API: it returns plain
+dicts, never raises on a Slack-side error (returns ``{"ok": False, ...}``), and
+takes an injected `WebClient` so tests stub it and never touch the network.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import time
-from typing import Any, Callable
+from typing import Any
 
-import google.auth.transport.requests
-import httpx
-from google.oauth2 import id_token
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
+# Slack rejects requests whose timestamp is more than 5 minutes off (replay guard).
+_MAX_SKEW_S = 60 * 5
 
-def fetch_id_token(audience: str) -> str:
-    """Return a Google-signed ID token whose audience is `audience`.
 
-    `audience` is the control-center service URL (e.g. https://...run.app). On
-    Cloud Run the ambient service account is used automatically; locally,
-    `gcloud auth application-default login` provides the credentials.
+def verify_slack_signature(
+    body: bytes,
+    timestamp: str,
+    signature: str,
+    signing_secret: str,
+    now: float,
+    max_skew_s: int = _MAX_SKEW_S,
+) -> bool:
+    """Verify the X-Slack-Signature header per Slack's HMAC scheme.
+
+    Rejects replays whose timestamp is more than `max_skew_s` from `now` (unix
+    seconds, injected — never read the clock here). See:
+    https://api.slack.com/authentication/verifying-requests-from-slack
     """
-    request = google.auth.transport.requests.Request()
-    return id_token.fetch_id_token(request, audience)
+    if not timestamp or not signature or not signing_secret:
+        return False
+    try:
+        ts = int(timestamp)
+    except ValueError:
+        return False
+    if abs(now - ts) > max_skew_s:
+        return False
+    base = b"v0:" + timestamp.encode() + b":" + body
+    digest = hmac.new(signing_secret.encode(), base, hashlib.sha256).hexdigest()
+    expected = f"v0={digest}"
+    return hmac.compare_digest(expected, signature)
 
 
-class ControlCenterClient:
-    """Thin httpx wrapper over the edw-data-control-center freshness API.
+def build_alert_blocks(
+    unique_id: str,
+    summary: str,
+    *,
+    failing_sources: list[str] | None = None,
+    actions_taken: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Compose the Block Kit payload for a stale-pipeline alert.
 
-    Every request carries an IAM ID token. The token-minting callable is
-    injected so tests can stub it and never touch GCP.
+    `summary` is the recovery agent's plain-text diagnosis. The action buttons
+    carry the model `unique_id` as their value so the interactivity handler can
+    correlate a click back to the model.
     """
-
-    def __init__(
-        self,
-        base_url: str,
-        http: httpx.Client,
-        token_provider: Callable[[str], str],
-    ) -> None:
-        self._base_url = base_url.rstrip("/")
-        self._http = http
-        self._token_provider = token_provider
-
-    def _headers(self) -> dict[str, str]:
-        token = self._token_provider(self._base_url)
-        return {"Authorization": f"Bearer {token}"}
-
-    def list_models(self) -> list[dict[str, Any]]:
-        """GET /models -> watched models with overall_is_fresh."""
-        r = self._http.get(f"{self._base_url}/models", headers=self._headers())
-        r.raise_for_status()
-        return r.json()
-
-    def get_model_status(self, unique_id: str) -> dict[str, Any]:
-        """GET /models/{unique_id}/status -> full PipelineStatus."""
-        r = self._http.get(
-            f"{self._base_url}/models/{unique_id}/status", headers=self._headers()
-        )
-        r.raise_for_status()
-        return r.json()
-
-    def trigger_loader(self, loader_type: str, loader_id: str) -> dict[str, Any]:
-        """POST a re-run request. The control center enforces rate limits."""
-        r = self._http.post(
-            f"{self._base_url}/loaders/{loader_type}/{loader_id}/trigger",
-            headers=self._headers(),
-        )
-        r.raise_for_status()
-        return r.json()
+    sources = ", ".join(f"`{s}`" for s in failing_sources) if failing_sources else "—"
+    taken = "\n".join(f"• {a}" for a in actions_taken) if actions_taken else "(none)"
+    return [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": "Stale pipeline needs attention"},
+        },
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*Model:*\n`{unique_id}`"},
+                {"type": "mrkdwn", "text": f"*Stale sources:*\n{sources}"},
+            ],
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*Diagnosis:*\n{summary or '(no summary)'}"},
+        },
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*Actions taken:*\n{taken}"},
+        },
+        {
+            "type": "actions",
+            "block_id": "edca_actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "style": "primary",
+                    "text": {"type": "plain_text", "text": "Re-run loader"},
+                    "action_id": "retrigger_loader",
+                    "value": unique_id,
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Acknowledge"},
+                    "action_id": "acknowledge",
+                    "value": unique_id,
+                },
+            ],
+        },
+    ]
 
 
 class SlackClient:
-    """Wrapper over the Slack Web API. Returns plain dicts; never raises on a
-    Slack-side error (returns ``{"ok": False, ...}``). The `WebClient` is
-    injected so tests stub it and never touch the network."""
-
     def __init__(self, web: WebClient, default_channel: str) -> None:
         self._web = web
         self._channel = default_channel

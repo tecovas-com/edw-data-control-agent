@@ -22,20 +22,64 @@ export CONTROL_CENTER_URL="https://edw-data-control-center-xxxx.run.app"
 python -m entrypoints.cron --once
 ```
 
+## Local Development Setup
+
+Copy the env template and fill in your secrets (Slack tokens, control-center URL):
+
+```bash
+cp .env.template .env
+# then edit .env with your values
+```
+
+### Add SA key
+- Go to 1Pass and find SA key for edw-data-control-agent
+- Copy paste that into `gcp/sa_key.json`
+
+### Test local Setup
+- Run `python tests/test_dev_env.py` to check if dev setup is correct  
+
+
 ## IAM Permissions
 
+### Create Service Accountn
+```
+gcloud iam service-accounts create edw-data-control-agent \
+    --project tecovas-prod-edw \
+    --display-name="EDW data control agent"
+```
+
+### Get SA JSON key
+```
+gcloud iam service-accounts keys create gcp/sa_key.json \
+    --iam-account=edw-data-control-agent@tecovas-prod-edw.iam.gserviceaccount.com \
+    --project tecovas-prod-edw
+```
+
 ### Grant SA Invoker permissions
+This grants the agent's service account permission to invoke the control-center Cloud Run service
+```
+gcloud run services add-iam-policy-binding edw-data-control-center \
+    --project tecovas-prod-edw \
+    --region us-central1 \
+    --member="serviceAccount:edw-data-control-agent@tecovas-prod-edw.iam.gserviceaccount.com" \
+    --role="roles/run.invoker"
+```
 
 ```
-  gcloud run services add-iam-policy-binding edw-data-control-center \
-      --project tecovas-prod-edw \
-      --region us-central1 \
-      --member="serviceAccount:edw-control-agent@tecovas-prod-edw.iam.gserviceaccount.com" \
-      --role="roles/run.invoker"
+gcloud iap web add-iam-policy-binding \
+    --resource-type=cloud-run \
+    --service=edw-data-control-center \
+    --region=us-central1 \
+    --project=tecovas-prod-edw \
+    --member="serviceAccount:edw-data-control-agent@tecovas-prod-edw.iam.gserviceaccount.com" \
+    --role="roles/iap.httpsResourceAccessor" \
+    --condition=none
 ```
-AGENT_SA="edw-control-agent@tecovas-prod-edw.iam.gserviceaccount.com"
 
-See `CLAUDE.md`. Decision logic is pure and lives in `src/core/`; all I/O
-(HTTP, IAM, LLM) is injected and constructed only in `src/entrypoints/`.
-
-
+```
+gcloud iap web get-iam-policy \
+    --resource-type=cloud-run \
+    --service=edw-data-control-center \
+    --region=us-central1 \
+    --project=tecovas-prod-edw
+```

@@ -13,14 +13,21 @@ from __future__ import annotations
 
 from typing import Any
 
-import httpx
+import requests
 from google.adk.agents import LlmAgent
 from google.adk.models.lite_llm import LiteLlm
 from slack_sdk import WebClient
 
-from . import settings
-from .clients import ControlCenterClient, SlackClient, fetch_id_token
-from .core import build_alert_blocks
+from . import (
+    CONTROL_CENTER_URL,
+    MODEL,
+    REQUEST_TIMEOUT_S,
+    SLACK_BOT_TOKEN,
+    SLACK_CHANNEL,
+)
+from .auth import make_iap_jwt
+from .data_client import ControlCenterClient
+from .slack import SlackClient, build_alert_blocks
 
 SYSTEM_INSTRUCTION = """\
 You are the data-platform recovery agent for Tecovas' EDW.
@@ -49,13 +56,16 @@ Be concise and factual. You are talking to data engineers.
 # --- concrete clients (constructed at the edge) -----------------------------
 
 control_center = ControlCenterClient(
-    base_url=settings.CONTROL_CENTER_URL,
-    http=httpx.Client(timeout=settings.REQUEST_TIMEOUT_S),
-    token_provider=fetch_id_token,
+    base_url=CONTROL_CENTER_URL,
+    http=requests.Session(),
+    token_provider=make_iap_jwt,
+    timeout=REQUEST_TIMEOUT_S,
+    # IAP self-signed JWT audience: the service URL with a path wildcard.
+    token_audience=f"{CONTROL_CENTER_URL.rstrip('/')}/*",
 )
 slack = SlackClient(
-    web=WebClient(token=settings.SLACK_BOT_TOKEN),
-    default_channel=settings.SLACK_CHANNEL,
+    web=WebClient(token=SLACK_BOT_TOKEN),
+    default_channel=SLACK_CHANNEL,
 )
 
 
@@ -76,15 +86,15 @@ def get_model_status(unique_id: str) -> dict[str, Any]:
     return control_center.get_model_status(unique_id)
 
 
-def retrigger_loader(loader_type: str, loader_id: str) -> dict[str, Any]:
-    """Request a re-run of a loader. May be refused by server-side limits.
+def refresh_model(unique_id: str) -> dict[str, Any]:
+    """Request a re-run for a stale model. May be refused by server-side limits.
+
+    The control center maps the model to its loader and enforces rate limits.
 
     Args:
-        loader_type: one of "fivetran", "airflow", "cloud_run_jobs",
-            "dbt_artifacts".
-        loader_id: the loader's id as configured in the control center.
+        unique_id: the dbt unique_id, e.g. "model.tecovas.fct_sales".
     """
-    return control_center.trigger_loader(loader_type, loader_id)
+    return control_center.refresh_model(unique_id)
 
 
 def alert_humans(
@@ -116,7 +126,7 @@ def alert_humans(
 
 root_agent = LlmAgent(
     name="edw_recovery_agent",
-    model=LiteLlm(model=settings.MODEL),
+    model=LiteLlm(model=MODEL),
     instruction=SYSTEM_INSTRUCTION,
-    tools=[list_watched_models, get_model_status, retrigger_loader, alert_humans],
+    tools=[list_watched_models, get_model_status, refresh_model, alert_humans],
 )

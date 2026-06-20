@@ -1,4 +1,4 @@
-"""Pure decision logic — NO I/O, NO datetime.now().
+"""Recovery decision logic — PURE: NO I/O, NO datetime.now().
 
 Everything here is testable with no network, no GCP, no LLM, no clock. It is the
 heart of the service:
@@ -6,18 +6,14 @@ heart of the service:
 - `may_retrigger`      — client-side guardrail check (a second line of defense;
                          the authoritative limits live server-side).
 - `plan_recovery`      — deterministic recovery decisions from a PipelineStatus.
-- `verify_slack_signature` / `build_alert_blocks` — pure Slack helpers.
 
 The concrete clients (control center, Slack, LLM) are constructed at the edge
 (agent.py / main.py) and never imported here.
 """
 from __future__ import annotations
 
-import hashlib
-import hmac
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any
 
 # --- policy: client-side guardrails -----------------------------------------
 
@@ -127,94 +123,3 @@ def plan_recovery(status: dict) -> RunbookResult:
             reason="ambiguous or no confident deterministic action",
         )
     return RunbookResult(actions=actions, reason="deterministic re-trigger")
-
-
-# --- slack: pure helpers (HMAC verification + Block Kit composition) ---------
-
-# Slack rejects requests whose timestamp is more than 5 minutes off (replay guard).
-_MAX_SKEW_S = 60 * 5
-
-
-def verify_slack_signature(
-    body: bytes,
-    timestamp: str,
-    signature: str,
-    signing_secret: str,
-    now: float,
-    max_skew_s: int = _MAX_SKEW_S,
-) -> bool:
-    """Verify the X-Slack-Signature header per Slack's HMAC scheme.
-
-    Rejects replays whose timestamp is more than `max_skew_s` from `now` (unix
-    seconds, injected — never read the clock in core). See:
-    https://api.slack.com/authentication/verifying-requests-from-slack
-    """
-    if not timestamp or not signature or not signing_secret:
-        return False
-    try:
-        ts = int(timestamp)
-    except ValueError:
-        return False
-    if abs(now - ts) > max_skew_s:
-        return False
-    base = b"v0:" + timestamp.encode() + b":" + body
-    digest = hmac.new(signing_secret.encode(), base, hashlib.sha256).hexdigest()
-    expected = f"v0={digest}"
-    return hmac.compare_digest(expected, signature)
-
-
-def build_alert_blocks(
-    unique_id: str,
-    summary: str,
-    *,
-    failing_sources: list[str] | None = None,
-    actions_taken: list[str] | None = None,
-) -> list[dict[str, Any]]:
-    """Compose the Block Kit payload for a stale-pipeline alert.
-
-    `summary` is the recovery agent's plain-text diagnosis. The action buttons
-    carry the model `unique_id` as their value so the interactivity handler can
-    correlate a click back to the model.
-    """
-    sources = ", ".join(f"`{s}`" for s in failing_sources) if failing_sources else "—"
-    taken = "\n".join(f"• {a}" for a in actions_taken) if actions_taken else "(none)"
-    return [
-        {
-            "type": "header",
-            "text": {"type": "plain_text", "text": "Stale pipeline needs attention"},
-        },
-        {
-            "type": "section",
-            "fields": [
-                {"type": "mrkdwn", "text": f"*Model:*\n`{unique_id}`"},
-                {"type": "mrkdwn", "text": f"*Stale sources:*\n{sources}"},
-            ],
-        },
-        {
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": f"*Diagnosis:*\n{summary or '(no summary)'}"},
-        },
-        {
-            "type": "section",
-            "text": {"type": "mrkdwn", "text": f"*Actions taken:*\n{taken}"},
-        },
-        {
-            "type": "actions",
-            "block_id": "edca_actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "style": "primary",
-                    "text": {"type": "plain_text", "text": "Re-run loader"},
-                    "action_id": "retrigger_loader",
-                    "value": unique_id,
-                },
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "Acknowledge"},
-                    "action_id": "acknowledge",
-                    "value": unique_id,
-                },
-            ],
-        },
-    ]

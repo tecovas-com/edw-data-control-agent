@@ -1,6 +1,6 @@
 google-adk         # agent framework
 litellm            # lets ADK run Claude models (via LiteLlm wrapper)
-httpx              # call the control-center API
+requests           # call the control-center API
 google-auth        # mint IAM ID tokens for service-to-service auth
 pydantic           # boundary models only
 pyyaml             # config
