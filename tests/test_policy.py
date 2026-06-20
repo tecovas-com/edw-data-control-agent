@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 
-from edca.core.policy import RecoveryAttempt, may_retrigger
+from src.core import RecoveryAttempt, may_retrigger
 
 NOW = datetime(2026, 6, 14, 12, 0, 0)
 

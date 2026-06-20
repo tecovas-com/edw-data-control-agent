@@ -1,4 +1,4 @@
-from edca.core.runbook import plan_recovery
+from src.core import plan_recovery
 
 
 def test_fresh_model_does_nothing():

@@ -12,17 +12,30 @@ network with a GCP IAM ID token. See `CLAUDE.md` for architecture and convention
 ## Quick start
 
 ```bash
-pip install -e ".[dev]"
+pip install -r requirements-dev.txt
 pytest -q
 
 # point at the control center
 export CONTROL_CENTER_URL="https://edw-data-control-center-xxxx.run.app"
 
 # run one heartbeat locally (uses ambient GCP credentials)
-python -m edca.entrypoints.cron --once
+python -m entrypoints.cron --once
 ```
 
-## Layout
+## IAM Permissions
 
-See `CLAUDE.md`. Decision logic is pure and lives in `src/edca/core/`; all I/O
-(HTTP, IAM, LLM) is injected and constructed only in `src/edca/entrypoints/`.
+### Grant SA Invoker permissions
+
+```
+  gcloud run services add-iam-policy-binding edw-data-control-center \
+      --project tecovas-prod-edw \
+      --region us-central1 \
+      --member="serviceAccount:edw-control-agent@tecovas-prod-edw.iam.gserviceaccount.com" \
+      --role="roles/run.invoker"
+```
+AGENT_SA="edw-control-agent@tecovas-prod-edw.iam.gserviceaccount.com"
+
+See `CLAUDE.md`. Decision logic is pure and lives in `src/core/`; all I/O
+(HTTP, IAM, LLM) is injected and constructed only in `src/entrypoints/`.
+
+

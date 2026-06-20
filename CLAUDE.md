@@ -29,56 +29,61 @@ service account. It never imports `edc.core` directly — the API is the contrac
    (Pub/Sub from a finished dbt/loader run) fires the entrypoint.
 2. **Check** — call the control center for stale models/sources.
 3. **Deterministic recovery** — for known failure modes, run the runbook
-   (`core/runbook.py`): re-trigger the loader once, re-check.
+   (`plan_recovery` in `core.py`): re-trigger the loader once, re-check.
 4. **Escalate** — if the runbook can't resolve it, or the situation is
-   ambiguous, hand it to the LLM agent (`agent/loop.py`), which diagnoses,
-   decides within policy (`core/policy.py`), and posts a rich alert.
+   ambiguous, hand it to the LLM agent (`root_agent` in `agent.py`), which
+   diagnoses, decides within policy (`may_retrigger` in `core.py`), and posts a
+   rich alert.
 
 ## Guardrails
 
 Recovery actions cost money and compute. **The hard guardrails (e.g. "re-run a
 loader at most once per hour") live server-side in the control center's MCP tool
-layer**, not in this agent's prompt. `core/policy.py` here is a *second*,
+layer**, not in this agent's prompt. `may_retrigger` in `core.py` is a *second*,
 client-side check so the agent fails fast and reasons about limits — but it is
 not the source of truth. Never let the agent issue an unbounded re-run loop.
 
 ## Conventions (inherited from control-center)
 
 - **Python ≥ 3.11**, type hints everywhere.
-- `dataclasses` in `core/`. `pydantic` only at boundaries (config, API payloads).
-- **`datetime.now()` is forbidden in `core/`** — always accept `now: datetime`.
-- **No I/O in `core/`** — the MCP/HTTP client, LLM client, and Slack client are
-  injected. Concrete clients are constructed only in `entrypoints/`.
+- `dataclasses` for the pure types in `core.py`. `pydantic` only at boundaries.
+- **`datetime.now()` is forbidden in `core.py`** — always accept `now: datetime`.
+- **No I/O in `core.py`** — the HTTP, LLM, and Slack clients live in `clients.py`
+  and are constructed at the edge (`agent.py` / `main.py`), never in `core.py`.
 - **No pytest fixtures.** Plain test functions; stub clients in `tests/stubs.py`.
-- **Fail loud** on misconfiguration at startup.
-- `core/` is pure decision logic and must be testable with no network, no GCP,
+- `core.py` is pure decision logic and must be testable with no network, no GCP,
   no LLM — stub everything.
+- Config is plain module-level constants in `settings.py`, read from env with
+  dev-safe defaults so `adk web` and tests import the package cleanly.
 
 ## Layout
 
+Flat modules — one file per layer (pure ↔ I/O ↔ edge), no nested packages.
+
 ```
-src/edca/
-├── client/
-│   ├── auth.py          # mint GCP IAM ID tokens (audience = control-center URL)
-│   └── control_center.py# httpx wrapper over the freshness API/MCP
-├── core/                # PURE decision logic — no I/O, no datetime.now()
-│   ├── runbook.py       # deterministic recovery decisions
-│   └── policy.py        # client-side guardrail checks
-├── agent/
-│   ├── loop.py          # LLM reasoning loop (escalation path)
-│   └── prompts.py       # system prompt + templates
-└── entrypoints/
-    ├── cron.py          # scheduled heartbeat: check → recover → escalate
-    └── handler.py       # event-driven (Pub/Sub) entry
-config/agent.yaml        # which models to watch, thresholds, escalation targets
-tests/                   # plain functions + stubs.py
+src/
+├── __init__.py     # marks src as a package (needed for adk web + imports)
+├── settings.py     # env-read config constants
+├── core.py         # PURE decision logic: plan_recovery, may_retrigger,
+│                   #   verify_slack_signature, build_alert_blocks
+├── clients.py      # I/O adapters: fetch_id_token, ControlCenterClient, SlackClient
+├── agent.py        # the LLM agent (escalation path): tools + `root_agent`
+└── main.py         # entrypoints: run_once heartbeat + FastAPI app (/run, /healthz)
+config/agent.yaml   # which models to watch, thresholds, escalation targets
+tests/              # plain functions + stubs.py
 ```
+
+## Running
+
+- **Dev UI:** `adk web` from the repo root — it loads `src.agent.root_agent`.
+- **HTTP (Cloud Run):** `uvicorn src.main:app` (Scheduler/Pub-Sub hits POST /run).
+- **One heartbeat locally:** `python -m src.main --once`.
+- **Tests:** `pytest -k "not live"` (live Slack tests need SLACK_BOT_TOKEN/CHANNEL).
 
 ## Build order (TDD, green before next step)
 
-1. `client/auth.py` + `client/control_center.py` — talk to the API (stub httpx).
-2. `core/policy.py` — guardrail checks (pure).
-3. `core/runbook.py` — deterministic recovery decisions (pure).
-4. `entrypoints/cron.py` — wire check → runbook against stub client.
-5. `agent/loop.py` — escalation path with injected LLM client.
-6. `entrypoints/handler.py` + deploy (Cloud Run + Scheduler/Pub-Sub).
+1. `clients.py` — talk to the API and Slack (stub httpx / WebClient).
+2. `core.py` — guardrail checks + deterministic recovery decisions (pure).
+3. `main.py` — wire check → runbook against a stub client.
+4. `agent.py` — escalation path: tools + `root_agent`.
+5. Deploy (Cloud Run + Scheduler/Pub-Sub).
