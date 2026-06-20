@@ -140,13 +140,20 @@ class SlackClient:
             return {"ok": False, "error": str(e)}
 
     def send_dm(self, user: str, text: str) -> dict[str, Any]:
-        """Send a direct message to a Slack user (ID or email)."""
+        """Send a direct message to a Slack user (ID or email).
+
+        Opens the IM channel with `conversations.open` and posts to that channel
+        ID. Posting to a raw user ID is unreliable — always resolve the DM
+        channel first.
+        """
         try:
             user_id = user
             if "@" in user:
                 lookup = self._web.users_lookupByEmail(email=user)
                 user_id = lookup["user"]["id"]
-            resp = self._web.chat_postMessage(channel=user_id, text=text)
+            opened = self._web.conversations_open(users=user_id)
+            dm_channel = opened["channel"]["id"]
+            resp = self._web.chat_postMessage(channel=dm_channel, text=text)
             return {
                 "ok": True,
                 "ts": resp["ts"],
@@ -155,6 +162,81 @@ class SlackClient:
             }
         except SlackApiError as e:
             return {"ok": False, "error": str(e)}
+
+    def find_channel_by_name(
+        self, name: str, limit: int = 1000
+    ) -> dict[str, Any]:
+        """Resolve a channel NAME (e.g. "data_devs") to its channel ID.
+
+        Slack's post APIs want a channel ID, not a name. This scans
+        `conversations.list` (public + private) and returns the first exact,
+        case-insensitive name match as ``{"ok": True, "id", "name"}``. Leading
+        ``#`` is ignored.
+        """
+        needle = name.strip().lstrip("#").lower()
+        if not needle:
+            return {"ok": False, "error": "empty name"}
+        cursor: str | None = None
+        try:
+            while True:
+                resp = self._web.conversations_list(
+                    limit=limit,
+                    cursor=cursor,
+                    types="public_channel,private_channel",
+                    exclude_archived=True,
+                )
+                for c in resp.get("channels", []):
+                    if (c.get("name") or "").lower() == needle:
+                        return {"ok": True, "id": c["id"], "name": c["name"]}
+                cursor = resp.get("response_metadata", {}).get("next_cursor")
+                if not cursor:
+                    break
+            return {"ok": False, "error": f"channel not found: {name}"}
+        except SlackApiError as e:
+            return {"ok": False, "error": str(e)}
+
+    def find_users_by_name(
+        self, name: str, limit: int = 1000
+    ) -> dict[str, Any]:
+        """Find Slack users whose name matches `name` (case-insensitive substring).
+
+        Slack has no name-lookup API (only email), so this scans `users.list`
+        and matches against real_name, display_name, and the handle. Paginates
+        through the workspace until exhausted. Returns the matching users as a
+        list of ``{"id", "name", "real_name", "display_name", "email"}`` dicts.
+        """
+        needle = name.strip().lower()
+        if not needle:
+            return {"ok": False, "error": "empty name", "users": []}
+        matches: list[dict[str, Any]] = []
+        cursor: str | None = None
+        try:
+            while True:
+                resp = self._web.users_list(limit=limit, cursor=cursor)
+                for m in resp.get("members", []):
+                    if m.get("deleted") or m.get("is_bot"):
+                        continue
+                    profile = m.get("profile", {})
+                    real_name = m.get("real_name") or profile.get("real_name", "")
+                    display_name = profile.get("display_name", "")
+                    handle = m.get("name", "")
+                    haystacks = (real_name, display_name, handle)
+                    if any(needle in (h or "").lower() for h in haystacks):
+                        matches.append(
+                            {
+                                "id": m["id"],
+                                "name": handle,
+                                "real_name": real_name,
+                                "display_name": display_name,
+                                "email": profile.get("email"),
+                            }
+                        )
+                cursor = resp.get("response_metadata", {}).get("next_cursor")
+                if not cursor:
+                    break
+            return {"ok": True, "users": matches}
+        except SlackApiError as e:
+            return {"ok": False, "error": str(e), "users": []}
 
     def delete_message(self, ts: str, channel: str | None = None) -> dict[str, Any]:
         """Delete a single message (or thread reply) by its ts."""
