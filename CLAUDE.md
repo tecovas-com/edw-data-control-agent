@@ -65,7 +65,7 @@ Three concerns, one-directional deps: `main.py -> {src, agents}` and
 in `agents/`; the entrypoint sits at the root, above both.
 
 ```
-main.py             # composition root / entrypoints: run_once heartbeat + FastAPI app (/run, /healthz)
+main.py             # composition root / entrypoints: run_once heartbeat + FastAPI app (/run, /health)
 src/                # core utilities — flat modules, one file per layer (pure ↔ I/O ↔ edge)
 ├── __init__.py     # marks src as a package
 ├── settings.py     # env-read config constants

@@ -40,7 +40,7 @@ Run the freshness recovery procedure now. This run started at {run_time}.
       succeeded — that points upstream.
    c. Take the action (refresh_model) if warranted, then re-check status.
    d. If a human needs to act (upstream problem, re-run refused, or staleness
-      persists), call alert_humans with a clear diagnosis.
+      persists), send DM to lorenzo.peve@tecovas.com (Lorenzo Peve) with a clear diagnosis.
 4. End with a concise summary: which models were stale, what you did for each,
    and which still need a human.
 
@@ -96,8 +96,10 @@ async def run_once() -> None:
 app = FastAPI(title="edw-data-control-agent")
 
 
-@app.get("/healthz")
-def healthz() -> dict[str, str]:
+@app.get("/health")
+def health() -> dict[str, str]:
+    # NOTE: not "/healthz" — Cloud Run's Google Front End intercepts that path,
+    # so it never reaches the container. Use "/health".
     return {"status": "ok"}
 
 

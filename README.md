@@ -118,3 +118,18 @@ gcloud iam service-accounts add-iam-policy-binding \
     --member="serviceAccount:edw-data-control-agent@tecovas-prod-edw.iam.gserviceaccount.com" \
     --role="roles/iam.serviceAccountTokenCreator" --project=tecovas-prod-edw
 ```
+
+### 7. Production: let the scheduler invoke the agent's own service
+The Cloud Scheduler heartbeat POSTs to the agent's private `/run` endpoint,
+authenticating **as the agent SA**. Cloud Run treats the *caller* and the
+service's *runtime identity* as unrelated, so the SA must be granted
+`run.invoker` on the agent service explicitly — being the service's attached SA
+does NOT imply permission to invoke it. **Without this, every heartbeat fails
+with `403 PERMISSION_DENIED` and the agent never runs.**
+```bash
+gcloud run services add-iam-policy-binding edw-data-control-agent \
+    --project=tecovas-prod-edw \
+    --region=us-central1 \
+    --member="serviceAccount:edw-data-control-agent@tecovas-prod-edw.iam.gserviceaccount.com" \
+    --role="roles/run.invoker"
+```

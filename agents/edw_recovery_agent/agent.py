@@ -12,6 +12,7 @@ must be set at runtime (the `Claude` class reads them to build the Vertex client
 """
 from __future__ import annotations
 
+import traceback
 from typing import Any, Callable
 
 import requests
@@ -87,11 +88,23 @@ slack = SlackClient(
 
 
 def _guard(payload_key: str, fn: Callable[[], Any]) -> dict[str, Any]:
-    """Run a control-center call, returning a success/error envelope."""
+    """Run a control-center call, returning a success/error envelope.
+
+    On failure the FULL traceback is printed to stderr (so it lands in Cloud Run
+    logs for troubleshooting), and the error message is enriched with the HTTP
+    status + response body when the exception carries an HTTP response.
+    """
     try:
         return {"status": "success", payload_key: fn()}
     except Exception as e:  # network / HTTP / decode — surface to the model
-        return {"status": "error", "error_message": str(e)}
+        traceback.print_exc()  # full stack -> stderr -> Cloud Run logs
+        msg = f"{type(e).__name__}: {e}"
+        resp = getattr(e, "response", None)
+        if resp is not None:  # requests.HTTPError etc. — add status + body
+            body = (resp.text or "")[:1000]
+            msg = f"{msg} | HTTP {resp.status_code} from {resp.url}: {body}"
+        print(f"[tool-error] {msg}", flush=True)
+        return {"status": "error", "error_message": msg}
 
 
 def _from_slack(result: dict[str, Any]) -> dict[str, Any]:
