@@ -46,14 +46,13 @@ IMAGE="${REGION}-docker.pkg.dev/${PROJECT}/${AR_REPO}/${SERVICE}:${TAG}"
 
 # Forward the runtime env to Cloud Run. We do NOT forward
 # GOOGLE_APPLICATION_CREDENTIALS — there is no key file on Cloud Run; auth.py
-# signs keylessly as the attached SA instead. Vertex project/location are pinned
-# to the deploy target. The "^|^" prefix makes "|" the delimiter so values that
-# contain commas or "@" (e.g. the SA email) are safe.
+# signs keylessly as the attached SA instead (discovering its own email from the
+# metadata server). Vertex project/location are pinned to the deploy target. The
+# "^|^" prefix makes "|" the delimiter so values that contain commas are safe.
 ENV_VARS="^|^CLOUD_RUN_DATA_CONTROL_URL=${CLOUD_RUN_DATA_CONTROL_URL}"
 ENV_VARS="${ENV_VARS}|SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}"
 ENV_VARS="${ENV_VARS}|SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET}"
 ENV_VARS="${ENV_VARS}|SLACK_CHANNEL=${SLACK_CHANNEL}"
-ENV_VARS="${ENV_VARS}|EDCA_SERVICE_ACCOUNT_EMAIL=${AGENT_SA}"
 ENV_VARS="${ENV_VARS}|GOOGLE_CLOUD_PROJECT=${PROJECT}"
 ENV_VARS="${ENV_VARS}|GOOGLE_CLOUD_LOCATION=${REGION}"
 ENV_VARS="${ENV_VARS}|GOOGLE_GENAI_USE_VERTEXAI=${GOOGLE_GENAI_USE_VERTEXAI:-TRUE}"

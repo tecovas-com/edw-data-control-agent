@@ -5,8 +5,8 @@ module-level `root_agent`. The clients are constructed here at import (this file
 IS the edge for the dev UI); the same `control_center`/`slack` objects are reused
 by the entrypoints in main.py.
 
-The model is Claude served from Vertex AI via ADK's native `Claude` class.
-Override the model id with EDCA_MODEL. Auth is GCP ADC
+The model is Claude served from Vertex AI via ADK's native `Claude` class
+(model id pinned in settings.MODEL). Auth is GCP ADC
 (GOOGLE_APPLICATION_CREDENTIALS); GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION
 must be set at runtime (the `Claude` class reads them to build the Vertex client).
 """
@@ -21,7 +21,6 @@ from slack_sdk import WebClient
 
 from src.settings import (
     CONTROL_CENTER_URL,
-    REQUEST_TIMEOUT_S,
     SLACK_BOT_TOKEN,
     SLACK_CHANNEL,
 )
@@ -69,7 +68,6 @@ control_center = ControlCenterClient(
     base_url=CONTROL_CENTER_URL,
     http=requests.Session(),
     token_provider=make_iap_jwt,
-    timeout=REQUEST_TIMEOUT_S,
     # IAP self-signed JWT audience: the service URL with a path wildcard.
     token_audience=f"{CONTROL_CENTER_URL.rstrip('/')}/*",
 )

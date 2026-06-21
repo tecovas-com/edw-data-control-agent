@@ -32,6 +32,7 @@ import time
 
 import google.auth
 from google.auth import crypt, iam, jwt
+from google.auth.compute_engine import _metadata
 from google.auth.transport.requests import Request
 
 # IAP rejects tokens older than ~1h; this is the JWT's validity window.
@@ -56,17 +57,20 @@ def _iam_api_signer() -> tuple[iam.Signer, str]:
 
     Used on Cloud Run, where no key file exists. Requires the ambient SA to hold
     roles/iam.serviceAccountTokenCreator on itself and the iamcredentials API.
+
+    The SA email is read from the GCP metadata server (always present on Cloud
+    Run). We avoid `credentials.service_account_email` because the compute
+    credential often reports it as the literal "default".
     """
     source_credentials, _ = google.auth.default(scopes=[_TOKEN_CREATOR_SCOPE])
-    email = os.environ.get("EDCA_SERVICE_ACCOUNT_EMAIL") or getattr(
-        source_credentials, "service_account_email", None
-    )
-    if not email or email == "default":
-        raise RuntimeError(
-            "could not determine the service account email for IAM-API signing; "
-            "set EDCA_SERVICE_ACCOUNT_EMAIL"
-        )
     request = Request()
+    try:
+        email = _metadata.get_service_account_info(request)["email"]
+    except Exception as e:  # not on GCP, or metadata unreachable
+        raise RuntimeError(
+            "could not determine the service account email from the metadata "
+            "server for IAM-API signing"
+        ) from e
     return iam.Signer(request, source_credentials, email), email
 
 

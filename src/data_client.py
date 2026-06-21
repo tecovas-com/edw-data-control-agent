@@ -24,13 +24,11 @@ class ControlCenterClient:
         base_url: str,
         http: requests.Session,
         token_provider: Callable[[str], str],
-        timeout: float = 30,
         token_audience: str | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._http = http
         self._token_provider = token_provider
-        self._timeout = timeout
         self._token_audience = token_audience or self._base_url
 
     def _headers(self) -> dict[str, str]:
@@ -42,7 +40,6 @@ class ControlCenterClient:
         r = self._http.get(
             f"{self._base_url}/api/health",
             headers=self._headers(),
-            timeout=self._timeout,
         )
         r.raise_for_status()
         return r.json()
@@ -52,7 +49,6 @@ class ControlCenterClient:
         r = self._http.get(
             f"{self._base_url}/api/models",
             headers=self._headers(),
-            timeout=self._timeout,
         )
         r.raise_for_status()
         return r.json()["models"]
@@ -61,9 +57,7 @@ class ControlCenterClient:
         """GET /api/models/status?filter=... -> {checked_at, models} in ONE call.
 
         Batch freshness for every watched model — avoids the list + per-model
-        N+1. Expensive server-side (fans out BigQuery + loader calls), so it has
-        no client-side timeout: let the request run to completion rather than
-        fail recovery on a read timeout.
+        N+1.
 
         Args:
             filter: one of "all", "stale", "behind_sources".
@@ -72,7 +66,6 @@ class ControlCenterClient:
             f"{self._base_url}/api/models/status",
             headers=self._headers(),
             params={"filter": filter},
-            timeout=None,
         )
         r.raise_for_status()
         return r.json()
@@ -82,7 +75,6 @@ class ControlCenterClient:
         r = self._http.get(
             f"{self._base_url}/api/models/{unique_id}",
             headers=self._headers(),
-            timeout=self._timeout,
         )
         r.raise_for_status()
         return r.json()
@@ -104,7 +96,6 @@ class ControlCenterClient:
             f"{self._base_url}/api/dbt/jobs/{quote(str(job_ref), safe='')}/trigger",
             headers=self._headers(),
             json=body,
-            timeout=self._timeout,
         )
         r.raise_for_status()
         return r.json()
@@ -117,7 +108,6 @@ class ControlCenterClient:
         r = self._http.post(
             f"{self._base_url}/api/models/{unique_id}/refresh",
             headers=self._headers(),
-            timeout=self._timeout,
         )
         r.raise_for_status()
         return r.json()

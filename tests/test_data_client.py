@@ -41,7 +41,6 @@ def _live_client() -> ControlCenterClient:
         base_url=base_url,
         http=requests.Session(),
         token_provider=make_iap_jwt,
-        timeout=float(os.environ.get("EDCA_TIMEOUT_S", "60")),
         token_audience=f"{base_url}/*",
     )
 
