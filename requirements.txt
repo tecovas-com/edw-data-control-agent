@@ -3,7 +3,6 @@ litellm            # lets ADK run Claude models (via LiteLlm wrapper)
 requests           # call the control-center API
 google-auth        # mint IAM ID tokens for service-to-service auth
 pydantic           # boundary models only
-pyyaml             # config
 fastapi            # HTTP entrypoint served on Cloud Run
 uvicorn[standard]  # ASGI server for the container
 slack-sdk          # post alerts / verify interactivity webhooks

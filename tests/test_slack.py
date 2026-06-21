@@ -119,6 +119,103 @@ def test_delete_message_passes_ts_through():
     assert fake.deleted == ["123.456"]
 
 
+# --- send_dm (resolves the DM channel, not a raw user id) --------------------
+
+def test_send_dm_opens_im_channel_then_posts_there():
+    fake = FakeWebClient()
+    result = SlackClient(fake, "C1").send_dm("U123", "hello")
+
+    assert result == {
+        "ok": True,
+        "ts": "999.000",
+        "channel": "D_U123",
+        "user_id": "U123",
+    }
+    # opened the IM, then posted to the resolved D-channel (NOT the raw user id).
+    assert fake.opened == ["U123"]
+    assert fake.posted[0]["channel"] == "D_U123"
+
+
+def test_send_dm_resolves_email_to_user_id_first():
+    fake = FakeWebClient(users_by_email={"a@b.com": "U999"})
+    result = SlackClient(fake, "C1").send_dm("a@b.com", "hi")
+
+    assert result["user_id"] == "U999"
+    assert fake.opened == ["U999"]
+    assert fake.posted[0]["channel"] == "D_U999"
+
+
+# --- find_users_by_name (scans users.list, paginates, filters) ---------------
+
+def _member(uid, *, name="", real="", display="", email=None, deleted=False, is_bot=False):
+    return {
+        "id": uid,
+        "name": name,
+        "real_name": real,
+        "deleted": deleted,
+        "is_bot": is_bot,
+        "profile": {"display_name": display, "email": email},
+    }
+
+
+def test_find_users_by_name_matches_across_fields_and_paginates():
+    members = [
+        _member("U1", name="lpeve", real="Lorenzo Peve", display="Lorenzo", email="l@x.com"),
+        _member("U2", name="jdoe", real="Jane Doe", display="Jane"),
+        _member("U3", name="lorenzo_bot", real="Lorenzo Bot", is_bot=True),  # bot -> skip
+        _member("U4", name="lpeve_old", real="Lorenzo Peve", deleted=True),  # deleted -> skip
+    ]
+    fake = FakeWebClient(members=members)
+    result = SlackClient(fake, "C1").find_users_by_name("lorenzo")
+
+    assert result["ok"] is True
+    ids = [u["id"] for u in result["users"]]
+    assert ids == ["U1"]
+    assert result["users"][0] == {
+        "id": "U1",
+        "name": "lpeve",
+        "real_name": "Lorenzo Peve",
+        "display_name": "Lorenzo",
+        "email": "l@x.com",
+    }
+
+
+def test_find_users_by_name_returns_all_matches_for_common_name():
+    members = [
+        _member("U1", real="Lorenzo Peve"),
+        _member("U2", real="Lorenzo Garcia"),
+        _member("U3", real="Jane Doe"),
+    ]
+    fake = FakeWebClient(members=members)
+    result = SlackClient(fake, "C1").find_users_by_name("lorenzo")
+    assert {u["id"] for u in result["users"]} == {"U1", "U2"}
+
+
+def test_find_users_by_name_rejects_empty():
+    result = SlackClient(FakeWebClient(), "C1").find_users_by_name("  ")
+    assert result == {"ok": False, "error": "empty name", "users": []}
+
+
+# --- find_channel_by_name (resolves a name to an id) -------------------------
+
+def test_find_channel_by_name_resolves_exact_match_across_pages():
+    channels = [
+        {"id": "C1", "name": "random"},
+        {"id": "C2", "name": "data_devs"},
+        {"id": "C3", "name": "tech"},
+    ]
+    fake = FakeWebClient(channels=channels)
+    # leading '#' and case are ignored
+    result = SlackClient(fake, "C0").find_channel_by_name("#Data_Devs")
+    assert result == {"ok": True, "id": "C2", "name": "data_devs"}
+
+
+def test_find_channel_by_name_not_found():
+    fake = FakeWebClient(channels=[{"id": "C1", "name": "random"}])
+    result = SlackClient(fake, "C0").find_channel_by_name("data_devs")
+    assert result["ok"] is False and "not found" in result["error"]
+
+
 # --- LIVE tests: actually post to Slack, then clean up -----------------------
 
 def _live_client() -> SlackClient:

@@ -11,16 +11,31 @@ class StubControlCenterClient:
         self,
         models: list[dict[str, Any]] | None = None,
         statuses: dict[str, dict[str, Any]] | None = None,
+        refusing: bool = False,
     ) -> None:
         self._models = models or []
         self._statuses = statuses or {}
+        self._refusing = refusing  # refresh_model refuses (server-side rate limit)
         self.triggered: list[tuple[str, str]] = []
+        self.refreshed: list[str] = []
 
     def list_models(self) -> list[dict[str, Any]]:
         return self._models
 
+    def models_status(self, filter: str = "all") -> dict[str, Any]:
+        models = list(self._statuses.values())
+        if filter == "stale":
+            models = [m for m in models if not m.get("overall_is_fresh", False)]
+        return {"checked_at": "2026-06-20T00:00:00Z", "models": models}
+
     def get_model_status(self, unique_id: str) -> dict[str, Any]:
         return self._statuses[unique_id]
+
+    def refresh_model(self, unique_id: str) -> dict[str, Any]:
+        self.refreshed.append(unique_id)
+        if self._refusing:
+            return {"ok": False, "refused": True, "reason": "rate limit: re-run at most once per hour"}
+        return {"ok": True, "run_id": "run-stub-123", "unique_id": unique_id}
 
     def trigger_loader(self, loader_type: str, loader_id: str) -> dict[str, Any]:
         self.triggered.append((loader_type, loader_id))
@@ -86,13 +101,20 @@ class FakeWebClient:
         bot_id: str = "B_BOT",
         history: list[dict[str, Any]] | None = None,
         replies: dict[str, list[dict[str, Any]]] | None = None,
+        members: list[dict[str, Any]] | None = None,
+        users_by_email: dict[str, str] | None = None,
+        channels: list[dict[str, Any]] | None = None,
     ) -> None:
         self._bot_user_id = bot_user_id
         self._bot_id = bot_id
         self._history = history or []
         self._replies = replies or {}
+        self._members = members or []
+        self._users_by_email = users_by_email or {}
+        self._channels = channels or []
         self.deleted: list[str] = []
         self.posted: list[dict[str, Any]] = []
+        self.opened: list[str] = []
 
     def auth_test(self) -> dict[str, Any]:
         return {"ok": True, "user_id": self._bot_user_id, "bot_id": self._bot_id, "team": "fake"}
@@ -110,3 +132,36 @@ class FakeWebClient:
     def chat_postMessage(self, **kwargs: Any) -> dict[str, Any]:
         self.posted.append(kwargs)
         return {"ts": "999.000", "channel": kwargs.get("channel", "C_FAKE")}
+
+    def conversations_open(self, users: str) -> dict[str, Any]:
+        self.opened.append(users)
+        return {"ok": True, "channel": {"id": f"D_{users}"}}
+
+    def users_lookupByEmail(self, email: str) -> dict[str, Any]:
+        return {"ok": True, "user": {"id": self._users_by_email[email]}}
+
+    def conversations_list(
+        self, limit: int = 1000, cursor: str | None = None, **kwargs: Any
+    ) -> dict[str, Any]:
+        # One channel per page so tests exercise the cursor loop.
+        idx = int(cursor) if cursor else 0
+        chans = self._channels[idx : idx + 1]
+        next_idx = idx + 1
+        next_cursor = str(next_idx) if next_idx < len(self._channels) else ""
+        return {
+            "ok": True,
+            "channels": chans,
+            "response_metadata": {"next_cursor": next_cursor},
+        }
+
+    def users_list(self, limit: int = 1000, cursor: str | None = None) -> dict[str, Any]:
+        # Paginate one member per page so tests exercise the cursor loop.
+        idx = int(cursor) if cursor else 0
+        member = self._members[idx : idx + 1]
+        next_idx = idx + 1
+        next_cursor = str(next_idx) if next_idx < len(self._members) else ""
+        return {
+            "ok": True,
+            "members": member,
+            "response_metadata": {"next_cursor": next_cursor},
+        }

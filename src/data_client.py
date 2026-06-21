@@ -13,6 +13,7 @@ decoupled from `base_url`: requests go to `base_url`, but the token is minted fo
 from __future__ import annotations
 
 from typing import Any, Callable
+from urllib.parse import quote
 
 import requests
 
@@ -23,35 +24,78 @@ class ControlCenterClient:
         base_url: str,
         http: requests.Session,
         token_provider: Callable[[str], str],
-        timeout: float = 30,
         token_audience: str | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._http = http
         self._token_provider = token_provider
-        self._timeout = timeout
         self._token_audience = token_audience or self._base_url
 
     def _headers(self) -> dict[str, str]:
         token = self._token_provider(self._token_audience)
         return {"Authorization": f"Bearer {token}"}
 
+    def health(self) -> dict[str, Any]:
+        """GET /api/health -> {status, model_count, loaders, dbt_cloud_configured}."""
+        r = self._http.get(
+            f"{self._base_url}/api/health",
+            headers=self._headers(),
+        )
+        r.raise_for_status()
+        return r.json()
+
     def list_models(self) -> list[dict[str, Any]]:
         """GET /api/models -> watched models (unique_id, name, max_age_hours, ...)."""
         r = self._http.get(
             f"{self._base_url}/api/models",
             headers=self._headers(),
-            timeout=self._timeout,
         )
         r.raise_for_status()
         return r.json()["models"]
+
+    def models_status(self, filter: str = "all") -> dict[str, Any]:
+        """GET /api/models/status?filter=... -> {checked_at, models} in ONE call.
+
+        Batch freshness for every watched model — avoids the list + per-model
+        N+1.
+
+        Args:
+            filter: one of "all", "stale", "behind_sources".
+        """
+        r = self._http.get(
+            f"{self._base_url}/api/models/status",
+            headers=self._headers(),
+            params={"filter": filter},
+        )
+        r.raise_for_status()
+        return r.json()
 
     def get_model_status(self, unique_id: str) -> dict[str, Any]:
         """GET /api/models/{unique_id} -> full freshness detail for one model."""
         r = self._http.get(
             f"{self._base_url}/api/models/{unique_id}",
             headers=self._headers(),
-            timeout=self._timeout,
+        )
+        r.raise_for_status()
+        return r.json()
+
+    def trigger_dbt_job(
+        self, job_ref: str, cause: str | None = None
+    ) -> dict[str, Any]:
+        """POST /api/dbt/jobs/{job_ref}/trigger -> {job_id, job_name, run_id}.
+
+        Trigger a dbt Cloud job by numeric id or exact name. The returned
+        ``run_id`` is the handle to poll ``GET /api/dbt/jobs/{job_ref}/runs``.
+
+        Args:
+            job_ref: numeric job id or exact job name (e.g. "Pricing Snapshot").
+            cause: optional free-text reason recorded on the run.
+        """
+        body = {"cause": cause} if cause is not None else {}
+        r = self._http.post(
+            f"{self._base_url}/api/dbt/jobs/{quote(str(job_ref), safe='')}/trigger",
+            headers=self._headers(),
+            json=body,
         )
         r.raise_for_status()
         return r.json()
@@ -64,7 +108,6 @@ class ControlCenterClient:
         r = self._http.post(
             f"{self._base_url}/api/models/{unique_id}/refresh",
             headers=self._headers(),
-            timeout=self._timeout,
         )
         r.raise_for_status()
         return r.json()
