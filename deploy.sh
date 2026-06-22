@@ -75,8 +75,8 @@ gcloud run deploy "${SERVICE}" \
 
 AGENT_URL="$(gcloud run services describe "${SERVICE}" --region "${REGION}" --project "${PROJECT}" --format='value(status.url)')"
 
-# Heartbeat: every day, every 25 min during 6:00-8:50 America/Chicago.
-SCHEDULE="${SCHEDULE:-*/25 6-8 * * *}"
+# Heartbeat: every day at 6:25, 6:50, 7:25, 7:50 America/Chicago.
+SCHEDULE="${SCHEDULE:-25,50 6-7 * * *}"
 TIME_ZONE="${TIME_ZONE:-America/Chicago}"
 echo ">> Create/refresh the heartbeat (${SCHEDULE} ${TIME_ZONE}) — Scheduler POSTs /run with an OIDC token"
 gcloud scheduler jobs create http "${SERVICE}-heartbeat" \

@@ -1,6 +1,7 @@
 gcp
 scrap/
 */*/.adk/*
+.claude/
 
 __pycache__/
 *.py[cod]
