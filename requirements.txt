@@ -6,3 +6,4 @@ pydantic           # boundary models only
 fastapi            # HTTP entrypoint served on Cloud Run
 uvicorn[standard]  # ASGI server for the container
 slack-sdk          # post alerts / verify interactivity webhooks
+google-cloud-bigquery  # read-only schema inspection + query tools (src/bigquery.py)

@@ -88,6 +88,101 @@ class StubSlackClient:
         return {"ok": True, "team": "stub", "user": "bot", "bot_id": "B_STUB"}
 
 
+class _FakeRef:
+    """A referenced-table ref exposing just `.dataset_id` (what the client reads)."""
+
+    def __init__(self, dataset_id: str) -> None:
+        self.dataset_id = dataset_id
+
+
+class _FakeRowIterator:
+    def __init__(self, rows: list[dict[str, Any]]) -> None:
+        self._rows = rows
+        self.total_rows = len(rows)
+
+    def __iter__(self):
+        return iter(self._rows)
+
+
+class _FakeBQJob:
+    """A query job: dry runs expose statement_type/estimate/refs; real runs yield rows."""
+
+    def __init__(
+        self,
+        *,
+        dry: bool,
+        rows: list[dict[str, Any]] | None = None,
+        statement_type: str = "SELECT",
+        total_bytes_processed: int = 0,
+        total_bytes_billed: int = 0,
+        referenced_datasets: tuple[str, ...] = (),
+        timeout: bool = False,
+        job_id: str = "job-fake",
+    ) -> None:
+        self._rows = rows or []
+        self._timeout = timeout
+        self.statement_type = statement_type
+        self.total_bytes_processed = total_bytes_processed
+        self.total_bytes_billed = 0 if dry else total_bytes_billed
+        self.referenced_tables = [_FakeRef(d) for d in referenced_datasets] if dry else []
+        self.job_id = None if dry else job_id
+        self.cancelled = False
+
+    def result(self, timeout: float | None = None) -> _FakeRowIterator:
+        if self._timeout:
+            from concurrent.futures import TimeoutError as _T
+            raise _T()
+        return _FakeRowIterator(self._rows)
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+
+class FakeBQClient:
+    """Fake google.cloud.bigquery.Client for testing BigQueryClient without the network.
+
+    Configure the canned dry-run verdict (statement_type, byte estimate, referenced
+    datasets) and the real-run rows; records every `query()` call (sql, dry_run,
+    labels) and every job created (to assert cancellation on timeout).
+    """
+
+    def __init__(
+        self,
+        *,
+        rows: list[dict[str, Any]] | None = None,
+        statement_type: str = "SELECT",
+        estimate_bytes: int = 0,
+        billed_bytes: int = 0,
+        referenced_datasets: tuple[str, ...] = (),
+        timeout: bool = False,
+    ) -> None:
+        self._rows = rows or []
+        self._statement_type = statement_type
+        self._estimate_bytes = estimate_bytes
+        self._billed_bytes = billed_bytes
+        self._referenced_datasets = referenced_datasets
+        self._timeout = timeout
+        self.queries: list[dict[str, Any]] = []
+        self.jobs: list[_FakeBQJob] = []
+
+    def query(self, sql: str, job_config: Any = None, location: str | None = None) -> _FakeBQJob:
+        dry = bool(getattr(job_config, "dry_run", False))
+        self.queries.append(
+            {"sql": sql, "dry_run": dry, "labels": dict(getattr(job_config, "labels", {}) or {})}
+        )
+        job = _FakeBQJob(
+            dry=dry,
+            rows=self._rows,
+            statement_type=self._statement_type,
+            total_bytes_processed=self._estimate_bytes,
+            total_bytes_billed=self._billed_bytes,
+            referenced_datasets=self._referenced_datasets,
+            timeout=self._timeout,
+        )
+        self.jobs.append(job)
+        return job
+
+
 class FakeWebClient:
     """Fake slack_sdk.WebClient for testing SlackClient I/O without the network.
 
