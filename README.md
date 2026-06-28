@@ -32,6 +32,57 @@ cp .env.template .env
 ### Test local Setup
 - Run `python tests/test_dev_env.py` to check if dev setup is correct  
 
+## Tooling
+
+Shared, reusable tool clients live in `src/`; agents wrap their methods as
+ADK tools. Each is constructed at the edge (`agent.py` / `main.py`) with an
+injected I/O client so tests stub it (see `tests/stubs.py`).
+
+### BigQuery (`src/bigquery.py`)
+
+Read-only access to the warehouse, behind hard guardrails. Three tools:
+
+| Tool | What it does |
+|---|---|
+| `list_tables(dataset)` | tables/views in an allowlisted dataset |
+| `get_schema(dataset, table)` | columns of one table — incl. nested STRUCT/ARRAY paths and dbt-persisted descriptions (`COLUMN_FIELD_PATHS`) |
+| `run_query(sql, *, caller=None)` | run a single read-only `SELECT`; returns rows + metadata |
+
+**Guardrails** (the app-layer belt; the SA's IAM/ACL grants are the real
+boundary — see `scripts/provision_bq_readonly_sa.py`):
+
+- `is_read_only` rejects anything but a single `SELECT`/`WITH` (fast, friendly).
+- a **dry-run** gates on `statement_type == "SELECT"` (blocks `EXPORT DATA` /
+  DML / `CALL` / multi-statement) and on the **byte estimate** vs.
+  `BQ_MAX_BYTES_BILLED` before the real run.
+- referenced datasets must be in the allowlist (∪ authorized-source datasets,
+  for raw read *through* authorized views like `dbt_views` → `raw_wfx`).
+- the real job carries `maximum_bytes_billed`, query-cache, a pinned location,
+  and `{agent, caller}` labels; on timeout the job is **cancelled**.
+- results are capped by **row count and serialized bytes** (`truncated` flags it).
+
+**Config** — read from the environment in `settings.py` (no code defaults); the
+values below ship in `.env.template`, copy it to `.env` for local dev:
+
+| Env var | `.env.template` value | Meaning |
+|---|---|---|
+| `BQ_PROJECT` | `tecovas-prod-edw` | query/billing project |
+| `BQ_ALLOWED_DATASETS` | `core,base,dbt_views` | the dataset allowlist |
+| `BQ_AUTHORIZED_SOURCE_DATASETS` | `raw_wfx` | raw datasets reachable via authorized views |
+| `BQ_MAX_BYTES_BILLED` | 20 GiB | per-query scan cap (job fails if exceeded) |
+| `BQ_MAX_ROWS` | 1000 | max rows returned |
+| `BQ_MAX_RESULT_BYTES` | 256 KiB | max serialized result returned to the model |
+| `BQ_QUERY_TIMEOUT_S` | 60 | client wait before cancelling the job |
+| `BQ_LOCATION` | `US` | dataset location |
+
+**Audit log** — every call emits one structured record via the injected
+`audit_log` callback (default: one JSON line to stdout → Cloud Run logs):
+`timestamp, agent, caller, label, sql, job_id, statement_type, bytes_processed,
+bytes_billed, total_rows, returned_rows, truncated, duration_ms, status, error`.
+
+> The read-only grants for the SA are provisioned by
+> `scripts/provision_bq_readonly_sa.py` (`--dry-run` / `--verify` / `--teardown`).
+
 ## IAM Permissions
 
 The agent runs as the **`edw-data-control-agent`** service account. The steps below
